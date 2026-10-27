@@ -1,0 +1,6 @@
+﻿Vendor: Test Supplies Ltd.
+Price: INR 55000
+RAM: 16 GB
+SSD: 512 GB
+Delivery: 7 days
+Warranty: 3 years

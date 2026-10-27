@@ -77,3 +77,51 @@ def test_unsupported_file_fails_clearly(tmp_path):
 def test_missing_file_fails_clearly(tmp_path):
     with pytest.raises(FileNotFoundError):
         parse_quotation(tmp_path / "missing.csv")
+
+def test_csv_supports_vehicle_quotation(tmp_path):
+    file_path = tmp_path / "vehicle.csv"
+    pd.DataFrame([{
+        "Supplier Name": "ABC Motors",
+        "Product": "Electric Bus",
+        "Unit Price INR": 2500000,
+        "Delivery Lead Time Days": 30,
+    }]).to_csv(file_path, index=False)
+
+    result = parse_quotation(file_path)
+    vendor = result["vendors"][0]
+
+    assert vendor["name"] == "ABC Motors"
+    assert vendor["price"] == 2500000
+
+
+def test_csv_supports_furniture_quotation(tmp_path):
+    file_path = tmp_path / "chairs.csv"
+    pd.DataFrame([{
+        "Supplier": "Office Furniture Co",
+        "Item Description": "Ergonomic Chair",
+        "Amount": 4500,
+        "Quantity": 20,
+    }]).to_csv(file_path, index=False)
+
+    result = parse_quotation(file_path)
+    vendor = result["vendors"][0]
+
+    assert vendor["name"] == "Office Furniture Co"
+    assert vendor["price"] == 4500
+
+
+def test_generic_quotation_preserves_missing_fields(tmp_path):
+    file_path = tmp_path / "generic.csv"
+    pd.DataFrame([{
+        "Vendor": "Reliable Supplies",
+        "Product": "Office Desk",
+        "Price": 8000,
+    }]).to_csv(file_path, index=False)
+
+    result = parse_quotation(file_path)
+    vendor = result["vendors"][0]
+
+    assert vendor["name"] == "Reliable Supplies"
+    assert vendor["price"] == 8000
+    assert vendor["complete"] is False
+    assert vendor["missing_fields"]

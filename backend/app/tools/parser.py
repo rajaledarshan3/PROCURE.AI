@@ -12,18 +12,40 @@ import pandas as pd
 import pdfplumber
 from docx import Document
 
-
 SUPPORTED_FORMATS = {
     ".pdf", ".xlsx", ".csv", ".docx", ".txt", ".eml", ".json"
 }
 
 COLUMN_ALIASES = {
-    "name": {"vendor", "vendor_name", "supplier", "supplier_name", "name"},
-    "price": {"price", "unit_price", "price_inr", "cost", "amount", "price_rs"},
-    "ram_gb": {"ram", "ram_gb", "memory", "memory_gb"},
-    "ssd_gb": {"ssd", "ssd_gb", "storage", "storage_gb"},
-    "delivery_days": {"delivery", "delivery_days", "lead_time", "lead_time_days"},
-    "warranty_years": {"warranty", "warranty_years", "warranty_yrs"},
+    "name": {
+        "vendor", "vendor_name", "supplier", "supplier_name", "name",
+        "bidder", "bidder_name", "company", "company_name",
+        "firm_name", "manufacturer", "manufacturer_name",
+        "quotation_from", "quoted_by", "agency_name"
+    },
+    "price": {
+        "price", "unit_price", "unit_price_inr", "price_inr",
+        "cost", "amount", "price_rs", "total_price", "quoted_price",
+        "rate", "quoted_amount", "total_amount", "bid_amount",
+        "financial_bid", "grand_total", "total_cost",
+        "basic_price", "ex_showroom_price", "on_road_price",
+        "vehicle_cost", "item_rate", "evaluated_price"
+    },
+    "ram_gb": {
+        "ram", "ram_gb", "memory", "memory_gb"
+    },
+    "ssd_gb": {
+        "ssd", "ssd_gb", "storage", "storage_gb"
+    },
+    "delivery_days": {
+        "delivery", "delivery_days", "lead_time", "lead_time_days",
+        "delivery_lead_time_days", "delivery_period_days",
+        "completion_period_days", "supply_period_days"
+    },
+    "warranty_years": {
+        "warranty", "warranty_years", "warranty_yrs",
+        "warranty_period", "warranty_period_years"
+    },
 }
 
 
@@ -101,19 +123,132 @@ def _normalize_row(row: dict[str, Any]) -> dict[str, Any]:
 
 
     
-def _extract_text_fields(text: str) -> dict[str, Any]:
-    """Extract explicitly labelled quotation fields, including vendor name."""
 
-    patterns = {
-        "name": r"^\s*(?:vendor|supplier)(?:\s+name)?\s*[:\-]\s*(.+?)\s*$",
-        "price": r"^\s*(?:(?:unit\s+)?price|cost|amount)\s*(?:inr|rs\.?|₹)?\s*[:\-]\s*₹?\s*([\d,]+(?:\.\d+)?)",
-        "ram_gb": r"^\s*(?:ram|memory)\s*[:\-]?\s*(\d+(?:\.\d+)?)\s*(?:gb)?",
-        "ssd_gb": r"^\s*(?:ssd|storage)\s*[:\-]?\s*(\d+(?:\.\d+)?)\s*(gb|tb)?",
-        "delivery_days": r"^\s*(?:delivery|lead\s*time)\s*[:\-]?\s*(\d+)\s*days?",
-        "warranty_years": r"^\s*warranty\s*[:\-]?\s*(\d+(?:\.\d+)?)\s*(years?|yrs?|months?)?",
+def _extract_text_fields(text: str) -> dict[str, Any]:
+    """Extract quotation details from common document layouts."""
+
+    text = text.lstrip("\ufeff")
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+
+    result: dict[str, Any] = {
+        "name": None,
+        "price": None,
+        "ram_gb": None,
+        "ssd_gb": None,
+        "delivery_days": None,
+        "warranty_years": None,
     }
 
-    result: dict[str, Any] = {}
+    # 1. Prefer an explicitly named vendor.
+    vendor_pattern = re.compile(
+        r"^\s*(?:vendor|supplier|bidder|company|firm)"
+        r"(?:\s+name)?\s*[:\-]\s*(.+?)\s*$",
+        re.IGNORECASE,
+    )
+
+    # If vendor is not named, use the product/model as a display fallback.
+    product_pattern = re.compile(
+        r"^\s*(?:proposed\s+model|vehicle\s+model|product\s+name|"
+        r"item\s+description|product|item|proposed\s+vehicle)"
+        r"\s*[:\-]\s*(.+?)\s*$",
+        re.IGNORECASE,
+    )
+
+    for line in lines:
+        match = vendor_pattern.search(line)
+        if match:
+            result["name"] = match.group(1).strip()
+            break
+
+    if not result["name"]:
+        for line in lines:
+            match = product_pattern.search(line)
+            if match:
+                result["name"] = match.group(1).strip()
+                break
+
+    # 2. Extract price from labelled lines.
+    # Prefer unit price over total quotation value.
+    price_patterns = [
+        r"\bunit\s+price(?:\s*\([^)]*\))?\s*[:\-]\s*"
+        r"(?:INR|Rs\.?|₹)?\s*₹?\s*([\d,]+(?:\.\d+)?)",
+
+        r"\b(?:quoted|basic|vehicle|ex[\s-]?showroom|on[\s-]?road)"
+        r"\s+price\s*[:\-]\s*(?:INR|Rs\.?|₹)?\s*₹?\s*"
+        r"([\d,]+(?:\.\d+)?)",
+
+        r"\bprice(?:\s*\([^)]*\))?\s*[:\-]\s*"
+        r"(?:INR|Rs\.?|₹)?\s*₹?\s*([\d,]+(?:\.\d+)?)",
+
+        r"\b(?:total\s+quoted\s+value|grand\s+total|"
+        r"total\s+price|total\s+amount|quoted\s+amount)"
+        r"\s*[:\-]\s*(?:INR|Rs\.?|₹)?\s*₹?\s*"
+        r"([\d,]+(?:\.\d+)?)",
+    ]
+
+    for pattern in price_patterns:
+        for line in lines:
+            match = re.search(pattern, line, re.IGNORECASE)
+            if match:
+                result["price"] = _number(match.group(1))
+                break
+        if result["price"] is not None:
+            break
+
+    # 3. Extract computer specifications when present.
+    for line in lines:
+        if result["ram_gb"] is None:
+            match = re.search(
+                r"\b(?:ram|memory)\s*[:\-]?\s*"
+                r"(\d+(?:\.\d+)?)\s*(gb)?\b",
+                line,
+                re.IGNORECASE,
+            )
+            if match:
+                result["ram_gb"] = _number(match.group(1))
+
+        if result["ssd_gb"] is None:
+            match = re.search(
+                r"\b(?:ssd|storage)\s*[:\-]?\s*"
+                r"(\d+(?:\.\d+)?)\s*(gb|tb)?\b",
+                line,
+                re.IGNORECASE,
+            )
+            if match:
+                result["ssd_gb"] = _number(match.group(1))
+                if (match.group(2) or "").lower() == "tb":
+                    result["ssd_gb"] *= 1024
+
+        if result["delivery_days"] is None:
+            match = re.search(
+                r"\b(?:delivery(?:\s+period|\s+lead\s+time)?|"
+                r"lead\s*time|supply\s+period|completion\s+period)"
+                r"\s*[:\-]?\s*(?:within\s+)?(\d+)\s*days?\b",
+                line,
+                re.IGNORECASE,
+            )
+            if match:
+                result["delivery_days"] = _number(match.group(1))
+
+        if result["warranty_years"] is None:
+            match = re.search(
+                r"\bwarranty(?:\s+period)?\s*[:\-]?\s*"
+                r"(\d+(?:\.\d+)?)\s*(years?|yrs?|months?)",
+                line,
+                re.IGNORECASE,
+            )
+            if match:
+                result["warranty_years"] = _number(match.group(1))
+                if match.group(2).lower().startswith("month"):
+                    result["warranty_years"] /= 12
+
+    result["missing_fields"] = [
+        field for field in COLUMN_ALIASES
+        if result.get(field) is None
+    ]
+    result["complete"] = not result["missing_fields"]
+
+    return result
 
     for field, pattern in patterns.items():
         match = re.search(
@@ -147,6 +282,7 @@ def _extract_text_fields(text: str) -> dict[str, Any]:
     result["complete"] = not result["missing_fields"]
 
     return result
+
 
 
 
@@ -284,3 +420,51 @@ def parse_quotation(file_path: str | Path) -> dict[str, Any]:
         "raw_text": raw_text,
         "warnings": warnings,
     }
+
+def test_csv_supports_vehicle_quotation(tmp_path):
+    file_path = tmp_path / "vehicle.csv"
+    pd.DataFrame([{
+        "Supplier Name": "ABC Motors",
+        "Product": "Electric Bus",
+        "Unit Price INR": 2500000,
+        "Delivery Lead Time Days": 30,
+    }]).to_csv(file_path, index=False)
+
+    result = parse_quotation(file_path)
+    vendor = result["vendors"][0]
+
+    assert vendor["name"] == "ABC Motors"
+    assert vendor["price"] == 2500000
+
+
+def test_csv_supports_furniture_quotation(tmp_path):
+    file_path = tmp_path / "chairs.csv"
+    pd.DataFrame([{
+        "Supplier": "Office Furniture Co",
+        "Item Description": "Ergonomic Chair",
+        "Amount": 4500,
+        "Quantity": 20,
+    }]).to_csv(file_path, index=False)
+
+    result = parse_quotation(file_path)
+    vendor = result["vendors"][0]
+
+    assert vendor["name"] == "Office Furniture Co"
+    assert vendor["price"] == 4500
+
+
+def test_generic_quotation_preserves_missing_fields(tmp_path):
+    file_path = tmp_path / "generic.csv"
+    pd.DataFrame([{
+        "Vendor": "Reliable Supplies",
+        "Product": "Office Desk",
+        "Price": 8000,
+    }]).to_csv(file_path, index=False)
+
+    result = parse_quotation(file_path)
+    vendor = result["vendors"][0]
+
+    assert vendor["name"] == "Reliable Supplies"
+    assert vendor["price"] == 8000
+    assert vendor["complete"] is False
+    assert vendor["missing_fields"]

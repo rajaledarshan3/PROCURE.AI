@@ -218,3 +218,15 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+# Frontend dependencies and build output
+node_modules/
+frontend/dist/
+
+# Local environment files
+.env
+.env.*
+!.env.example
+
+# Python virtual environments
+backend/venv/
+frontend/App-debug.txt

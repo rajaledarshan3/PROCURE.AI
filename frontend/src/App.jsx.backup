@@ -1,0 +1,1009 @@
+import { useEffect, useState } from "react";
+import {
+  Activity,
+  ArrowRight,
+  CheckCircle2,
+  Clock3,
+  FileSpreadsheet,
+  LayoutDashboard,
+  LoaderCircle,
+  Menu,
+  ShieldCheck,
+  Sparkles,
+  UploadCloud,
+  Users,
+  X,
+  RefreshCw,
+} from "lucide-react";
+
+const API = import.meta.env.VITE_API_BASE_URL || "http://127.0.0.1:8000";
+
+const defaults = {
+  quantity: 50,
+  min_ram_gb: 16,
+  min_ssd_gb: 512,
+  max_price: 60000,
+  max_delivery_days: 15,
+  min_warranty_years: 3,
+};
+
+const money = (n) =>
+  new Intl.NumberFormat("en-IN", {
+    style: "currency",
+    currency: "INR",
+    maximumFractionDigits: 0,
+  }).format(Number(n || 0));
+
+function App() {
+  const [page, S] = useState("Overview");
+  const [health, H] = useState("Checking");
+  const [requirements, R] = useState(defaults);
+  const [files, F] = useState([]);
+  const [parsed, P] = useState(null);
+  const [vendors, V] = useState([]);
+  const [busy, B] = useState(false);
+  const [msg, M] = useState("");
+  const [run, Q] = useState(null);
+  const [runId, I] = useState("");
+  const [approval, A] = useState({
+    approved: true,
+    reviewer: "Procurement Manager",
+    notes: "",
+  });
+  const [review, Rev] = useState(null);
+  const [history, Hist] = useState([]);
+
+  async function check() {
+    try {
+      const r = await fetch(`${API}/health`);
+      H(r.ok ? "Connected" : "Error");
+    } catch {
+      H("Offline");
+    }
+  }
+
+  useEffect(() => {
+    check();
+  }, []);
+
+  async function upload(e) {
+    e.preventDefault();
+
+    if (!files.length) {
+      M("Choose quotation files first.");
+      return;
+    }
+
+    B(true);
+    M("");
+
+    const fd = new FormData();
+    files.forEach((f) => fd.append("files", f));
+
+    try {
+      const r = await fetch(`${API}/upload-quotations`, {
+        method: "POST",
+        body: fd,
+      });
+
+      const d = await r.json();
+
+      if (!r.ok) {
+        throw Error(d.detail || r.status);
+      }
+
+      P(d);
+      M("Quotation parsing completed. Review the extracted records below.");
+    } catch (e) {
+      M(`Upload failed: ${e.message}. Check backend/CORS.`);
+    } finally {
+      B(false);
+    }
+  }
+
+  const records =
+    parsed?.files?.flatMap((f) =>
+      (f.vendors || []).map((v) => ({
+        ...v,
+        source_file: f.source_file,
+      })),
+    ) || [];
+
+  function load() {
+    const good = records.filter((v) => v.complete && !v.missing_fields?.length);
+
+    V(
+      good.map(
+        ({ name, price, ram_gb, ssd_gb, delivery_days, warranty_years }) => ({
+          name,
+          price,
+          ram_gb,
+          ssd_gb,
+          delivery_days,
+          warranty_years,
+        }),
+      ),
+    );
+
+    S("New analysis");
+
+    M(
+      good.length
+        ? `${good.length} complete vendor(s) loaded.`
+        : "No complete vendor records. Check missing fields.",
+    );
+  }
+
+  async function analyze(e) {
+    e.preventDefault();
+
+    if (!vendors.length) {
+      M("Add vendors by uploading a quotation first.");
+      return;
+    }
+
+    B(true);
+    M("");
+
+    try {
+      const r = await fetch(`${API}/runs`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          requirements,
+          vendors,
+        }),
+      });
+
+      const d = await r.json();
+
+      if (!r.ok) {
+        throw Error(d.detail || r.status);
+      }
+
+      Q(d);
+      I(d.run_id);
+
+      Hist((old) => [{ ...d, date: new Date().toLocaleString() }, ...old]);
+
+      S("Results");
+    } catch (e) {
+      M(`Analysis failed: ${e.message}`);
+    } finally {
+      B(false);
+    }
+  }
+
+  async function submit(e) {
+    e.preventDefault();
+    B(true);
+
+    try {
+      const r = await fetch(`${API}/runs/${runId}/approval`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify(approval),
+      });
+
+      const d = await r.json();
+
+      if (!r.ok) {
+        throw Error(d.detail || r.status);
+      }
+
+      Rev(d);
+      Q((old) => ({ ...old, ...d }));
+
+      Hist((old) =>
+        old.map((x) => (x.run_id === runId ? { ...x, status: d.status } : x)),
+      );
+
+      M("Review saved.");
+    } catch (e) {
+      Rev({ error: e.message });
+    } finally {
+      B(false);
+    }
+  }
+
+  const rows = run?.ranked_vendors || run?.evaluation_results || [];
+
+  const nav = [
+    ["Overview", LayoutDashboard],
+    ["Quotations", FileSpreadsheet],
+    ["New analysis", Sparkles],
+    ["Results", Activity],
+    ["Approvals", ShieldCheck],
+  ];
+
+  return (
+    <div className="shell">
+      <aside className="sidebar">
+        <div className="brand">
+          <span className="logo">
+            <Sparkles />
+          </span>
+          <div>
+            <b>
+              PROCURE<span>.AI</span>
+            </b>
+            <small>INTELLIGENT SOURCING</small>
+          </div>
+        </div>
+
+        <div className="workspace">
+          P
+          <div>
+            <b>Procurement team</b>
+            <small>Workspace</small>
+          </div>
+        </div>
+
+        <label className="navlabel">WORKSPACE</label>
+
+        {nav.map(([n, Icon]) => (
+          <button
+            key={n}
+            className={`nav ${page === n ? "active" : ""}`}
+            onClick={() => S(n)}
+          >
+            <Icon size={17} />
+            {n}
+          </button>
+        ))}
+
+        <div className="sidebottom">
+          <ShieldCheck />
+          <b>Transparent procurement</b>
+          <p>
+            Rules-first evaluation with human approval and auditable decisions.
+          </p>
+        </div>
+      </aside>
+
+      <main>
+        <header>
+          <button
+            className="mobile"
+            onClick={() =>
+              document.querySelector(".sidebar")?.classList.toggle("show")
+            }
+          >
+            <Menu />
+          </button>
+
+          <span>
+            Workspace　/　<b>{page}</b>
+          </span>
+
+          <div className={`health ${health === "Connected" ? "ok" : ""}`}>
+            <i />
+            {health}
+          </div>
+
+          <button className="refresh" onClick={check}>
+            <RefreshCw size={16} />
+          </button>
+        </header>
+
+        <div className="content">
+          {msg && (
+            <div className="message">
+              <span>{msg}</span>
+              <button onClick={() => M("")}>
+                <X size={15} />
+              </button>
+            </div>
+          )}
+
+          {page === "Overview" && (
+            <>
+              <div className="heading">
+                <div>
+                  <label>PROCUREMENT INTELLIGENCE</label>
+                  <h1>Procurement workspace</h1>
+                  <p>
+                    Evaluate quotations, compare vendors and make traceable
+                    sourcing decisions.
+                  </p>
+                </div>
+
+                <button className="primary" onClick={() => S("New analysis")}>
+                  <Sparkles size={16} />
+                  New analysis
+                </button>
+              </div>
+
+              <section className="hero">
+                <div>
+                  <span className="pill">AI-ASSISTED · RULES-FIRST</span>
+                  <h2>
+                    Smarter decisions.
+                    <br />
+                    <em>Stronger procurement.</em>
+                  </h2>
+                  <p>
+                    Turn supplier quotations into evidence-led recommendations
+                    with eligibility checks and human approval.
+                  </p>
+                  <button className="light" onClick={() => S("Quotations")}>
+                    Upload quotations <UploadCloud size={16} />
+                  </button>
+                </div>
+
+                <div className="heroGraphic">
+                  <div className="circle">
+                    <ShieldCheck size={48} />
+                  </div>
+                  <div className="floatcard">
+                    ✓ Rules verified
+                    <small>Eligibility checks</small>
+                  </div>
+                </div>
+              </section>
+
+              <div className="sectiontitle">
+                <h2>Workspace overview</h2>
+                <span>Live session</span>
+              </div>
+
+              <div className="metrics">
+                <Metric
+                  icon={Activity}
+                  title="Procurement runs"
+                  value={history.length}
+                />
+                <Metric
+                  icon={Users}
+                  title="Vendors evaluated"
+                  value={history.reduce(
+                    (n, x) => n + (x.total_vendors || 0),
+                    0,
+                  )}
+                />
+                <Metric
+                  icon={Clock3}
+                  title="Pending approvals"
+                  value={history.filter((x) => x.status === "pending").length}
+                />
+                <Metric icon={CheckCircle2} title="Backend" value={health} />
+              </div>
+
+              <section className="panel">
+                <div className="panelhead">
+                  <div>
+                    <h2>Recent procurement runs</h2>
+                    <p>Runs created in this browser session.</p>
+                  </div>
+                  <button
+                    className="secondary"
+                    onClick={() => S("Activity log")}
+                  >
+                    View activity →
+                  </button>
+                </div>
+
+                {history.length ? (
+                  <History
+                    history={history}
+                    open={(x) => {
+                      Q(x);
+                      I(x.run_id);
+                      S("Results");
+                    }}
+                  />
+                ) : (
+                  <Empty
+                    title="No procurement runs yet"
+                    text="Upload a quotation or start a new analysis to see activity."
+                    action="Start analysis"
+                    click={() => S("New analysis")}
+                  />
+                )}
+              </section>
+            </>
+          )}
+
+          {page === "Quotations" && (
+            <>
+              <div className="heading">
+                <div>
+                  <label>SUPPLIER DOCUMENTS</label>
+                  <h1>Quotation intake</h1>
+                  <p>
+                    Upload quotations and review extracted vendor information.
+                  </p>
+                </div>
+                <span className="badge">7 formats supported</span>
+              </div>
+
+              <form className="panel" onSubmit={upload}>
+                <label className="drop">
+                  <input
+                    type="file"
+                    multiple
+                    accept=".pdf,.xlsx,.csv,.docx,.txt,.eml,.json"
+                    onChange={(e) => F([...e.target.files])}
+                  />
+                  <UploadCloud size={34} />
+                  <h3>
+                    Drop quotations here, or <em>browse files</em>
+                  </h3>
+                  <p>PDF, Excel, CSV, Word, TXT, EML or JSON</p>
+                  <small>LOCAL DEMO · PROCESSED BY YOUR BACKEND</small>
+                </label>
+
+                {files.map((f) => (
+                  <div className="file" key={f.name}>
+                    <FileSpreadsheet size={16} />
+                    {f.name}
+                    <span>{(f.size / 1024).toFixed(1)} KB</span>
+                  </div>
+                ))}
+
+                <div className="formfoot">
+                  <span>Review extracted data before making decisions.</span>
+                  <button className="primary" disabled={busy || !files.length}>
+                    {busy ? (
+                      <LoaderCircle className="spin" />
+                    ) : (
+                      <UploadCloud size={16} />
+                    )}
+                    Parse quotations
+                  </button>
+                </div>
+              </form>
+
+              {parsed && (
+                <section className="panel">
+                  <div className="panelhead">
+                    <div>
+                      <h2>Extraction results</h2>
+                      <p>
+                        {parsed.uploaded_files} file(s) · {records.length}{" "}
+                        vendor record(s)
+                      </p>
+                    </div>
+                    <button className="primary" onClick={load}>
+                      Load complete vendors
+                    </button>
+                  </div>
+
+                  {parsed.files.map((f) => (
+                    <div key={f.source_file}>
+                      <h3 className="filename">{f.source_file}</h3>
+
+                      {f.warnings?.map((w) => (
+                        <p className="warning" key={w}>
+                          {w}
+                        </p>
+                      ))}
+
+                      <div className="tablewrap">
+                        <table>
+                          <thead>
+                            <tr>
+                              <th>Vendor</th>
+                              <th>Price</th>
+                              <th>RAM</th>
+                              <th>SSD</th>
+                              <th>Delivery</th>
+                              <th>Warranty</th>
+                              <th>Quality</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {(f.vendors || []).map((v, i) => (
+                              <tr key={i}>
+                                <td>
+                                  <b>{v.name || "Unknown"}</b>
+                                </td>
+                                <td>
+                                  {v.price == null ? "—" : money(v.price)}
+                                </td>
+                                <td>{v.ram_gb ?? "—"} GB</td>
+                                <td>{v.ssd_gb ?? "—"} GB</td>
+                                <td>{v.delivery_days ?? "—"} days</td>
+                                <td>{v.warranty_years ?? "—"} yr</td>
+                                <td>
+                                  <span
+                                    className={`tag ${
+                                      v.complete ? "green" : "amber"
+                                    }`}
+                                  >
+                                    {v.complete
+                                      ? "Complete"
+                                      : `${v.missing_fields?.length || 0} missing`}
+                                  </span>
+                                </td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    </div>
+                  ))}
+                </section>
+              )}
+            </>
+          )}
+
+          {page === "New analysis" && (
+            <>
+              <div className="heading">
+                <div>
+                  <label>DECISION ENGINE</label>
+                  <h1>New procurement analysis</h1>
+                  <p>
+                    Set requirements and evaluate vendor quotations against
+                    mandatory constraints.
+                  </p>
+                </div>
+              </div>
+
+              <form className="analysis" onSubmit={analyze}>
+                <section className="panel">
+                  <div className="panelhead">
+                    <div>
+                      <h2>01 · Procurement requirements</h2>
+                      <p>Mandatory constraints for this purchase.</p>
+                    </div>
+                  </div>
+
+                  <div className="fields">
+                    {[
+                      ["quantity", "Quantity", "units"],
+                      ["max_price", "Maximum price", "INR"],
+                      ["min_ram_gb", "Minimum RAM", "GB"],
+                      ["min_ssd_gb", "Minimum SSD", "GB"],
+                      ["max_delivery_days", "Maximum delivery", "days"],
+                      ["min_warranty_years", "Minimum warranty", "years"],
+                    ].map(([k, l, u]) => (
+                      <label key={k}>
+                        {l}
+                        <div className="number">
+                          <input
+                            type="number"
+                            min="0"
+                            step={k === "min_warranty_years" ? "0.5" : "1"}
+                            value={requirements[k]}
+                            onChange={(e) =>
+                              R({
+                                ...requirements,
+                                [k]: Number(e.target.value),
+                              })
+                            }
+                            required
+                          />
+                          <small>{u}</small>
+                        </div>
+                      </label>
+                    ))}
+                  </div>
+                </section>
+
+                <section className="panel">
+                  <div className="panelhead">
+                    <div>
+                      <h2>02 · Vendor quotations</h2>
+                      <p>Load complete records from uploaded files.</p>
+                    </div>
+                    <button
+                      type="button"
+                      className="secondary"
+                      onClick={() => S("Quotations")}
+                    >
+                      Upload files
+                    </button>
+                  </div>
+
+                  {vendors.length ? (
+                    <>
+                      {vendors.map((v, i) => (
+                        <div className="vendorline" key={i}>
+                          <b>{v.name}</b>
+                          <span>{money(v.price)}</span>
+                          <span>{v.ram_gb} GB RAM</span>
+                          <span>{v.ssd_gb} GB SSD</span>
+                          <span>{v.delivery_days} days</span>
+                          <button
+                            type="button"
+                            onClick={() => V(vendors.filter((_, j) => i !== j))}
+                          >
+                            Remove
+                          </button>
+                        </div>
+                      ))}
+                    </>
+                  ) : (
+                    <Empty
+                      title="No vendor records loaded"
+                      text="Upload a quotation and load complete records to continue."
+                      action="Go to quotations"
+                      click={() => S("Quotations")}
+                    />
+                  )}
+
+                  <button
+                    type="button"
+                    className="link"
+                    onClick={() =>
+                      V([
+                        ...vendors,
+                        {
+                          name: `Sample Vendor ${vendors.length + 1}`,
+                          price: 55000,
+                          ram_gb: 16,
+                          ssd_gb: 512,
+                          delivery_days: 10,
+                          warranty_years: 3,
+                        },
+                      ])
+                    }
+                  >
+                    + Add sample vendor
+                  </button>
+                </section>
+
+                <aside className="rules">
+                  <ShieldCheck size={22} />
+                  <h3>Rules-first evaluation</h3>
+                  <p>
+                    Eligibility is decided by the deterministic constraint
+                    engine. AI explanations never override failed mandatory
+                    requirements.
+                  </p>
+                  <ul>
+                    <li>Price within budget</li>
+                    <li>RAM and SSD minimums</li>
+                    <li>Delivery deadline</li>
+                    <li>Warranty requirement</li>
+                  </ul>
+                </aside>
+
+                <button
+                  className="primary runbtn"
+                  disabled={busy || !vendors.length}
+                >
+                  {busy ? (
+                    <LoaderCircle className="spin" />
+                  ) : (
+                    <Sparkles size={17} />
+                  )}
+                  Run procurement analysis
+                </button>
+              </form>
+            </>
+          )}
+
+          {page === "Results" && (
+            <>
+              <div className="heading">
+                <div>
+                  <label>ANALYSIS REPORT</label>
+                  <h1>Vendor evaluation</h1>
+                  <p>
+                    Eligibility, ranking and human review for this procurement
+                    run.
+                  </p>
+                </div>
+
+                {run && (
+                  <span
+                    className={`tag ${
+                      run.status === "pending" ? "amber" : "green"
+                    }`}
+                  >
+                    {run.status}
+                  </span>
+                )}
+              </div>
+
+              {run ? (
+                <>
+                  <section className="panel runid">
+                    <div>
+                      <small>PROCUREMENT RUN ID</small>
+                      <code>{runId}</code>
+                    </div>
+                    <div>
+                      <small>VENDORS</small>
+                      <b>{run.total_vendors ?? rows.length}</b>
+                    </div>
+                  </section>
+
+                  <section className="panel">
+                    <div className="panelhead">
+                      <div>
+                        <h2>Vendor ranking</h2>
+                        <p>
+                          Results returned by the backend procurement engine.
+                        </p>
+                      </div>
+                      <span className="tag green">Rules-based</span>
+                    </div>
+
+                    <div className="tablewrap">
+                      <table>
+                        <thead>
+                          <tr>
+                            <th>Vendor</th>
+                            <th>Price</th>
+                            <th>Specs</th>
+                            <th>Delivery</th>
+                            <th>Warranty</th>
+                            <th>Decision</th>
+                            <th>Reasons</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {rows.map((v, i) => (
+                            <tr key={i}>
+                              <td>
+                                <b>
+                                  #{v.rank || i + 1} {v.name}
+                                </b>
+                              </td>
+                              <td>{money(v.price)}</td>
+                              <td>
+                                {v.ram_gb} GB / {v.ssd_gb} GB
+                              </td>
+                              <td>{v.delivery_days} days</td>
+                              <td>{v.warranty_years} yr</td>
+                              <td>
+                                <span
+                                  className={`tag ${
+                                    v.eligible ? "green" : "red"
+                                  }`}
+                                >
+                                  {v.eligible ? "Eligible" : "Rejected"}
+                                </span>
+                              </td>
+                              <td>
+                                {(v.reasons || v.rejection_reasons || []).join(
+                                  ", ",
+                                ) || "—"}
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </section>
+
+                  {run.status === "pending" && (
+                    <section className="panel">
+                      <h2>03 · Human approval</h2>
+                      <p className="sub">
+                        Review and record a decision. This is saved by the
+                        backend.
+                      </p>
+
+                      <form onSubmit={submit} className="fields">
+                        <label>
+                          Reviewer
+                          <input
+                            value={approval.reviewer}
+                            onChange={(e) =>
+                              A({
+                                ...approval,
+                                reviewer: e.target.value,
+                              })
+                            }
+                            required
+                          />
+                        </label>
+
+                        <label>
+                          Decision
+                          <select
+                            value={String(approval.approved)}
+                            onChange={(e) =>
+                              A({
+                                ...approval,
+                                approved: e.target.value === "true",
+                              })
+                            }
+                          >
+                            <option value="true">Approve recommendation</option>
+                            <option value="false">Reject recommendation</option>
+                          </select>
+                        </label>
+
+                        <label className="full">
+                          Notes
+                          <textarea
+                            value={approval.notes}
+                            onChange={(e) =>
+                              A({
+                                ...approval,
+                                notes: e.target.value,
+                              })
+                            }
+                            placeholder="Reason for decision"
+                          />
+                        </label>
+
+                        <button className="primary" disabled={busy}>
+                          {busy ? (
+                            <LoaderCircle className="spin" />
+                          ) : (
+                            <ShieldCheck size={16} />
+                          )}
+                          Submit review
+                        </button>
+                      </form>
+
+                      {review && (
+                        <p className={review.error ? "warning" : "success"}>
+                          {review.error || `Review saved: ${review.status}`}
+                        </p>
+                      )}
+                    </section>
+                  )}
+                </>
+              ) : (
+                <section className="panel">
+                  <Empty
+                    title="No analysis results"
+                    text="Run procurement analysis to see vendor ranking."
+                    action="New analysis"
+                    click={() => S("New analysis")}
+                  />
+                </section>
+              )}
+            </>
+          )}
+
+          {page === "Approvals" && (
+            <>
+              <div className="heading">
+                <div>
+                  <label>GOVERNANCE</label>
+                  <h1>Approval queue</h1>
+                  <p>Human review for procurement recommendations.</p>
+                </div>
+              </div>
+
+              <section className="panel">
+                {run?.status === "pending" ? (
+                  <Empty
+                    title="Recommendation awaits review"
+                    text={`Run ID: ${runId}`}
+                    action="Review recommendation"
+                    click={() => S("Results")}
+                  />
+                ) : (
+                  <Empty
+                    title="No pending approvals"
+                    text="Run an analysis to create a recommendation for review."
+                    action="Start analysis"
+                    click={() => S("New analysis")}
+                  />
+                )}
+              </section>
+            </>
+          )}
+
+          {page === "Activity log" && (
+            <>
+              <div className="heading">
+                <div>
+                  <label>TRACEABILITY</label>
+                  <h1>Activity log</h1>
+                  <p>Procurement runs created in this browser session.</p>
+                </div>
+              </div>
+
+              <section className="panel">
+                {history.length ? (
+                  <History
+                    history={history}
+                    open={(x) => {
+                      Q(x);
+                      I(x.run_id);
+                      S("Results");
+                    }}
+                  />
+                ) : (
+                  <Empty
+                    title="No activity yet"
+                    text="Activity appears when you create procurement runs."
+                    action="Start analysis"
+                    click={() => S("New analysis")}
+                  />
+                )}
+              </section>
+            </>
+          )}
+        </div>
+
+        <footer>
+          PROCURE.AI <span>·</span> Intelligent procurement workspace
+          <span className="right">
+            Prototype v1.0 · Rules-first, auditable sourcing
+          </span>
+        </footer>
+      </main>
+    </div>
+  );
+}
+
+function Metric({ icon: Icon, title, value }) {
+  return (
+    <div className="metric">
+      <span>
+        <Icon size={19} />
+      </span>
+      <small>{title}</small>
+      <b>{value}</b>
+      <em>Live workspace data</em>
+    </div>
+  );
+}
+
+function Empty({ title, text, action, click }) {
+  return (
+    <div className="empty">
+      <span>
+        <FileSpreadsheet size={22} />
+      </span>
+      <b>{title}</b>
+      <p>{text}</p>
+      {action && (
+        <button className="secondary" onClick={click}>
+          {action} <ArrowRight size={14} />
+        </button>
+      )}
+    </div>
+  );
+}
+
+function History({ history, open }) {
+  return (
+    <div className="tablewrap">
+      <table>
+        <thead>
+          <tr>
+            <th>Run ID</th>
+            <th>Created</th>
+            <th>Vendors</th>
+            <th>Status</th>
+            <th />
+          </tr>
+        </thead>
+        <tbody>
+          {history.map((x, i) => (
+            <tr key={x.run_id || i}>
+              <td>
+                <code>{x.run_id}</code>
+              </td>
+              <td>{x.date || "Earlier session"}</td>
+              <td>{x.total_vendors || 0}</td>
+              <td>
+                <span
+                  className={`tag ${
+                    x.status === "pending" ? "amber" : "green"
+                  }`}
+                >
+                  {x.status}
+                </span>
+              </td>
+              <td>
+                <button className="link" onClick={() => open(x)}>
+                  Open →
+                </button>
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+export default App;

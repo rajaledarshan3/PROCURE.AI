@@ -1,9 +1,8 @@
 
 from typing import Literal
 
-from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import END, START, StateGraph
-from langgraph.types import Command, interrupt
+from langgraph.types import interrupt
 
 from app.agent.nodes import (
     evaluate_vendors_node,
@@ -12,6 +11,7 @@ from app.agent.nodes import (
     record_approval_node,
 )
 from app.agent.state import ProcurementState
+from app.db.checkpointer import checkpointer
 
 
 def approval_gate(state: ProcurementState) -> dict:
@@ -69,7 +69,7 @@ def build_procurement_graph():
     workflow.add_edge("approval_gate", "record_approval")
     workflow.add_edge("record_approval", END)
 
-    return workflow.compile(checkpointer=MemorySaver())
+    return workflow.compile(checkpointer=checkpointer)
 
 
 procurement_graph = build_procurement_graph()
