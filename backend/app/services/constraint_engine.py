@@ -1,3 +1,5 @@
+from app.services.dynamic_constraints import evaluate_constraints
+
 
 def evaluate_vendor(requirements, vendor):
     failures = []
@@ -29,9 +31,54 @@ def evaluate_vendor(requirements, vendor):
     }
 
 
+_STATUS_LABELS = {
+    "eligible": "Eligible",
+    "not_eligible": "Not eligible",
+    "needs_review": "Needs review",
+    "invalid_constraints": "Invalid constraints",
+}
+
+
+def evaluate_vendor_dynamic(vendor: dict, constraints: list[dict]) -> dict:
+    """Judge one vendor (any fields) against category-independent rules.
+
+    Returns the same shape as evaluate_vendor(), plus the detailed
+    mandatory_failures / preferred_misses / missing_fields lists.
+    """
+    raw = evaluate_constraints(vendor, constraints)
+
+    reasons = [
+        f"{item['field']} must be {item['operator']} "
+        f"{item['expected']} (got {item['actual']})"
+        for item in raw["mandatory_failures"]
+    ]
+    reasons += [
+        f"Missing data for '{field}'; manual review required"
+        for field in raw["missing_fields"]
+    ]
+    reasons += raw["errors"]
+
+    return {
+        "vendor": vendor.get("name") or "Unnamed vendor",
+        "price": vendor.get("price"),
+        "eligible": raw["eligible"],
+        "status": _STATUS_LABELS.get(raw["status"], raw["status"]),
+        "reasons": reasons,
+        "mandatory_failures": raw["mandatory_failures"],
+        "preferred_misses": raw["preferred_misses"],
+        "missing_fields": raw["missing_fields"],
+    }
+
+
 def rank_vendors(results):
+    """Rank eligible vendors by lowest price (fewer preferred misses win ties)."""
     eligible = [v for v in results if v["eligible"]]
-    eligible.sort(key=lambda v: v["price"])
+    eligible.sort(
+        key=lambda v: (
+            v["price"] if v.get("price") is not None else float("inf"),
+            len(v.get("preferred_misses", [])),
+        )
+    )
 
     for rank, vendor in enumerate(eligible, start=1):
         vendor["rank"] = rank
@@ -45,7 +92,9 @@ def rank_vendors(results):
         if not vendor["eligible"]:
             vendor["rank"] = None
             vendor["recommendation_reason"] = (
-                "Excluded because mandatory requirements failed"
+                "Excluded until the missing information is reviewed"
+                if vendor.get("status") == "Needs review"
+                else "Excluded because mandatory requirements failed"
             )
 
     return results

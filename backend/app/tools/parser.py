@@ -115,6 +115,36 @@ def _normalize_row(row: dict[str, Any]) -> dict[str, Any]:
         if "month" in warranty_raw:
             result["warranty_years"] /= 12
 
+    # Keep every other column too (material, load_capacity_kg, ...), so
+    # category-specific rules can be evaluated later.
+    known_keys = {key for aliases in COLUMN_ALIASES.values() for key in aliases}
+    known_keys.add("warranty_months")
+    unit_suffixes = (
+        "_kg", "_gb", "_days", "_years", "_mm", "_cm", "_inr", "_pct",
+        "_percent", "_count", "_qty",
+    )
+
+    for key, value in normalized_keys.items():
+        if not key or key in known_keys or key in result:
+            continue
+        if value is None:
+            continue
+
+        if isinstance(value, (list, dict)):
+            result[key] = value
+            continue
+
+        text_value = str(value).strip()
+        if not text_value:
+            continue
+
+        is_plain_number = re.fullmatch(r"-?\d+(?:\.\d+)?", text_value.replace(",", ""))
+        if is_plain_number or key.endswith(unit_suffixes):
+            number = _number(value)
+            result[key] = number if number is not None else text_value
+        else:
+            result[key] = text_value
+
     result["missing_fields"] = [
         field for field in COLUMN_ALIASES if result.get(field) is None
     ]

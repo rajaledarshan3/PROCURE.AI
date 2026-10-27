@@ -9,7 +9,7 @@ from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.openapi.utils import get_openapi
 from langgraph.types import Command
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ValidationError, model_validator
 from sqlalchemy import select
 from sqlalchemy.exc import SQLAlchemyError
 
@@ -204,8 +204,20 @@ class AnalysisRequest(BaseModel):
 
 
 class ProcurementRunRequest(BaseModel):
-    requirements: Requirements
-    vendors: list[Vendor] = Field(min_length=1)
+    """Send `requirements` (laptop fields) OR `constraints` (any category)."""
+
+    requirements: Requirements | None = None
+    constraints: list[dict[str, Any]] | None = None
+    vendors: list[dict[str, Any]] = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def exactly_one_rule_source(self):
+        if (self.requirements is None) == (not self.constraints):
+            raise ValueError(
+                "Send either 'requirements' or a non-empty 'constraints' "
+                "list, not both and not neither."
+            )
+        return self
 
 
 class ApprovalRequest(BaseModel):
@@ -319,15 +331,48 @@ def analyze(data: AnalysisRequest):
 def create_run(data: ProcurementRunRequest):
     run_id = str(uuid4())
 
-    initial_state = {
-        "requirements": data.requirements.model_dump(
-            exclude={"quantity"}
-        ),
-        "vendor_records": [
-            vendor.model_dump() for vendor in data.vendors
-        ],
-        "errors": [],
-    }
+    if data.constraints is not None:
+        # Universal mode: any product category, rules come from the request.
+        constraint_errors = validate_constraints(data.constraints)
+
+        if constraint_errors:
+            raise HTTPException(
+                status_code=422,
+                detail={"errors": constraint_errors},
+            )
+
+        vendor_records = data.vendors
+        requirements_snapshot = {"constraints": data.constraints}
+        initial_state = {
+            "requirements": requirements_snapshot,
+            "constraints": data.constraints,
+            "vendor_records": vendor_records,
+            "errors": [],
+        }
+    else:
+        # Legacy mode: fixed laptop requirements and vendor fields.
+        try:
+            vendor_records = [
+                Vendor.model_validate(vendor).model_dump()
+                for vendor in data.vendors
+            ]
+        except ValidationError as exc:
+            raise HTTPException(
+                status_code=422,
+                detail=[
+                    {"loc": list(error["loc"]), "msg": error["msg"]}
+                    for error in exc.errors()
+                ],
+            ) from exc
+
+        requirements_snapshot = data.requirements.model_dump()
+        initial_state = {
+            "requirements": data.requirements.model_dump(
+                exclude={"quantity"}
+            ),
+            "vendor_records": vendor_records,
+            "errors": [],
+        }
 
     try:
         result = procurement_graph.invoke(
@@ -363,10 +408,8 @@ def create_run(data: ProcurementRunRequest):
                 ProcurementRun(
                     run_id=run_id,
                     status=status,
-                    requirements=data.requirements.model_dump(),
-                    vendor_records=[
-                        vendor.model_dump() for vendor in data.vendors
-                    ],
+                    requirements=requirements_snapshot,
+                    vendor_records=vendor_records,
                     evaluation_results=evaluation_results,
                     ranked_vendors=ranked_vendors,
                     selected_vendor=selected_vendor,
@@ -414,6 +457,8 @@ def create_run(data: ProcurementRunRequest):
         "evaluation_results": evaluation_results,
         "ranked_vendors": ranked_vendors,
         "approval_required": approval_required,
+        "ai_explanations": result.get("ai_explanations"),
+        "ai_warnings": result.get("ai_warnings", []),
         "errors": errors,
     }
 
@@ -542,6 +587,8 @@ def get_run(run_id: str):
         "approval_decision": run.approval_decision,
         "errors": run.errors,
         "workflow_checkpoint_available": bool(state),
+        "ai_explanations": state.get("ai_explanations"),
+        "ai_warnings": state.get("ai_warnings", []),
         "audit_log": audit_log,
     }
 

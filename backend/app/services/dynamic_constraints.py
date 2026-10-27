@@ -88,6 +88,26 @@ def _matches(actual: Any, operator: str, expected: Any) -> bool:
     raise ValueError(f"Unsupported operator: {operator}")
 
 
+def _record_unusable(
+    rule: dict[str, Any],
+    actual: Any,
+    missing_fields: list[str],
+    preferred_misses: list[dict[str, Any]],
+) -> None:
+    """Missing/unusable data blocks only mandatory rules, never preferred ones."""
+    if rule["severity"] == "mandatory":
+        missing_fields.append(rule["field"])
+    else:
+        preferred_misses.append(
+            {
+                "field": rule["field"],
+                "operator": rule["operator"],
+                "expected": rule["value"],
+                "actual": actual,
+            }
+        )
+
+
 def evaluate_constraints(
     vendor: dict[str, Any],
     constraints: list[dict[str, Any]],
@@ -113,13 +133,13 @@ def evaluate_constraints(
         actual = vendor.get(field)
 
         if field not in vendor or actual is None:
-            missing_fields.append(field)
+            _record_unusable(rule, None, missing_fields, preferred_misses)
             continue
 
         try:
             matched = _matches(actual, rule["operator"], rule["value"])
         except (TypeError, ValueError):
-            missing_fields.append(field)
+            _record_unusable(rule, actual, missing_fields, preferred_misses)
             continue
 
         if not matched:

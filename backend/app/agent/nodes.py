@@ -5,7 +5,11 @@ from google.genai.errors import APIError
 from pydantic import BaseModel, Field
 
 from app.agent.state import ProcurementState
-from app.services.constraint_engine import evaluate_vendor, rank_vendors
+from app.services.constraint_engine import (
+    evaluate_vendor,
+    evaluate_vendor_dynamic,
+    rank_vendors,
+)
 from app.services.gemini_service import (
     explain_recommendation,
     extract_vendor_quotation,
@@ -30,10 +34,24 @@ class VendorModel(BaseModel):
     warranty_years: float = Field(ge=0)
 
 
+def constraint_fields(constraints: list[dict[str, Any]]) -> list[str]:
+    """Fields to extract from a quotation: name, price and every rule field."""
+    fields = ["name", "price"]
+    for rule in constraints:
+        field = rule.get("field")
+        if isinstance(field, str) and field and field not in fields:
+            fields.append(field)
+    return fields
+
+
 def parse_quotations_node(state: ProcurementState) -> dict[str, Any]:
     records = list(state.get("vendor_records", []))
     errors = list(state.get("errors", []))
     parsed_records = []
+
+    # Universal mode: extract exactly the fields the rules need.
+    constraints = state.get("constraints")
+    fields = constraint_fields(constraints) if constraints else None
 
     for record in records:
         if not isinstance(record, str):
@@ -47,13 +65,24 @@ def parse_quotations_node(state: ProcurementState) -> dict[str, Any]:
             errors.extend(parsed.get("warnings", []))
 
             # Use Gemini when local extraction is empty or incomplete.
-            needs_ai = not vendors or any(
-                vendor.get("missing_fields") for vendor in vendors
-            )
+            if fields:
+                needs_ai = not vendors or any(
+                    vendor.get(field) is None
+                    for vendor in vendors
+                    for field in fields
+                )
+            else:
+                needs_ai = not vendors or any(
+                    vendor.get("missing_fields") for vendor in vendors
+                )
 
             if needs_ai and raw_text:
                 try:
-                    ai_result = extract_vendor_quotation(raw_text)
+                    ai_result = (
+                        extract_vendor_quotation(raw_text, fields=fields)
+                        if fields
+                        else extract_vendor_quotation(raw_text)
+                    )
                     ai_vendors = ai_result.get("vendors", [])
                     errors.extend(ai_result.get("warnings", []))
 
@@ -87,7 +116,45 @@ def parse_quotations_node(state: ProcurementState) -> dict[str, Any]:
     }
 
 
+def evaluate_vendors_dynamic(
+    state: ProcurementState,
+    constraints: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Universal evaluation: any product category, rules come from data."""
+    results = []
+    errors = list(state.get("errors", []))
+
+    for index, record in enumerate(
+        state.get("vendor_records", []), start=1
+    ):
+        if not isinstance(record, dict):
+            errors.append(f"Vendor record {index} is not a valid record.")
+            continue
+
+        result = evaluate_vendor_dynamic(record, constraints)
+
+        if result["missing_fields"]:
+            errors.append(
+                f"{result['vendor']} has missing data for: "
+                + ", ".join(result["missing_fields"])
+            )
+
+        results.append(result)
+
+    ranked = rank_vendors(results)
+
+    return {
+        "evaluation_results": results,
+        "ranked_vendors": ranked,
+        "errors": errors,
+    }
+
+
 def evaluate_vendors_node(state: ProcurementState) -> dict[str, Any]:
+    constraints = state.get("constraints")
+    if constraints:
+        return evaluate_vendors_dynamic(state, constraints)
+
     requirements = RequirementsModel.model_validate(state["requirements"])
     results = []
     errors = list(state.get("errors", []))
@@ -166,6 +233,15 @@ def prepare_approval_node(state: ProcurementState) -> dict[str, Any]:
         source_warnings.append(
             f"{selected_name} has missing fields: "
             + ", ".join(missing_fields)
+        )
+
+    # Universal mode: tell the reviewer which nice-to-have rules were missed.
+    for miss in winner.get("preferred_misses", []):
+        got = "no data" if miss["actual"] is None else miss["actual"]
+        source_warnings.append(
+            f"{selected_name} does not meet the preferred requirement "
+            f"{miss['field']} {miss['operator']} {miss['expected']} "
+            f"(got {got})."
         )
 
     # Gemini explains the result; Python remains authoritative for ranking.
