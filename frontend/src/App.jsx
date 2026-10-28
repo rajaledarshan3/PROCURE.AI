@@ -318,6 +318,108 @@ function App() {
     }
   }
 
+  function buildDynamicPayload() {
+    return {
+      constraints: constraints.map((rule) => ({
+        ...rule,
+        field: rule.field.trim(),
+        value: toComparableValue(rule.value, rule.operator),
+      })),
+
+      vendors: dynamicVendors.map((vendor, index) => {
+        const cleaned = {
+          name: vendor.name || `Vendor ${index + 1}`,
+        };
+
+        // Price is always sent: the ranking uses it even without a price rule.
+        if (vendor.price !== "" && vendor.price != null) {
+          cleaned.price = toScalarValue(vendor.price);
+        }
+
+        constraints.forEach((rule) => {
+          const field = String(rule.field || "").trim();
+
+          if (!field) {
+            return;
+          }
+
+          const raw = vendor[field];
+
+          if (raw === "" || raw == null) {
+            return;
+          }
+
+          cleaned[field] = toScalarValue(raw);
+        });
+
+        return cleaned;
+      }),
+    };
+  }
+
+  function errorText(data, status) {
+    const detail = data?.detail;
+
+    if (typeof detail === "string") {
+      return detail;
+    }
+
+    if (Array.isArray(detail)) {
+      return detail.map((item) => item.msg || JSON.stringify(item)).join(" ");
+    }
+
+    return detail?.errors?.join(" ") || JSON.stringify(detail) || status;
+  }
+
+  async function runDynamicWorkflow() {
+    if (!constraints.length || !dynamicVendors.length) {
+      M("Add at least one constraint and one vendor.");
+      return;
+    }
+
+    const invalidRule = constraints.find(
+      (rule) =>
+        !String(rule.field || "").trim() ||
+        rule.value === "" ||
+        rule.value == null,
+    );
+
+    if (invalidRule) {
+      M("Every constraint needs a field and value.");
+      return;
+    }
+
+    B(true);
+    M("");
+
+    try {
+      const r = await fetch(`${API}/runs`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify(buildDynamicPayload()),
+      });
+
+      const d = await r.json();
+
+      if (!r.ok) {
+        throw Error(errorText(d, r.status));
+      }
+
+      Q(d);
+      I(d.run_id);
+
+      Hist((old) => [{ ...d, date: new Date().toLocaleString() }, ...old]);
+
+      S("Results");
+    } catch (error) {
+      M(`Workflow failed: ${error.message}`);
+    } finally {
+      B(false);
+    }
+  }
+
   useEffect(() => {
     check();
     loadTemplates();
@@ -1023,6 +1125,16 @@ function App() {
                       </div>
                     ))}
                   </div>
+
+                  <button
+                    className="primary"
+                    type="button"
+                    disabled={busy}
+                    onClick={runDynamicWorkflow}
+                    style={{ marginTop: 16 }}
+                  >
+                    Start approval workflow <ArrowRight size={16} />
+                  </button>
                 </div>
               )}
             </section>{" "}
@@ -1269,6 +1381,7 @@ function App() {
                     <table>
                       <thead>
                         <tr>
+                          <th>Rank</th>
                           <th>Vendor</th>
                           <th>Price</th>
                           <th>Status</th>
@@ -1277,22 +1390,35 @@ function App() {
                       </thead>
                       <tbody>
                         {rows.map((item, index) => {
-                          const vendor = item.vendor || item;
+                          const name =
+                            typeof item.vendor === "string"
+                              ? item.vendor
+                              : item.vendor?.name ||
+                                item.name ||
+                                "Unknown vendor";
+                          const price = item.price ?? item.vendor?.price;
+                          const details = [
+                            ...(item.reasons || item.failures || []),
+                            ...(item.preferred_misses || []).map(
+                              (miss) =>
+                                `Preferred: ${miss.field} ${miss.operator} ${String(
+                                  miss.expected,
+                                )}`,
+                            ),
+                          ];
+
                           return (
-                            <tr key={`${vendor.name || "vendor"}-${index}`}>
-                              <td>{vendor.name || "Unknown vendor"}</td>
-                              <td>
-                                {vendor.price != null
-                                  ? money(vendor.price)
-                                  : "—"}
-                              </td>
+                            <tr key={`${name}-${index}`}>
+                              <td>{item.rank ?? "—"}</td>
+                              <td>{name}</td>
+                              <td>{price != null ? money(price) : "—"}</td>
                               <td>
                                 {item.status || item.eligibility || "Evaluated"}
                               </td>
                               <td>
-                                {(item.reasons || item.failures || []).join?.(
-                                  ", ",
-                                ) || "See analysis response"}
+                                {details.length
+                                  ? details.join("; ")
+                                  : item.recommendation_reason || "—"}
                               </td>
                             </tr>
                           );
@@ -1306,6 +1432,32 @@ function App() {
                   >
                     {JSON.stringify(run, null, 2)}
                   </pre>
+                )}
+
+                {run.ai_explanations && (
+                  <div style={{ marginTop: 18 }}>
+                    <h3>AI explanation</h3>
+                    {run.ai_explanations.summary && (
+                      <p>{run.ai_explanations.summary}</p>
+                    )}
+                    {run.ai_explanations.selected_vendor_reason && (
+                      <p>
+                        <b>Why this vendor:</b>{" "}
+                        {run.ai_explanations.selected_vendor_reason}
+                      </p>
+                    )}
+                  </div>
+                )}
+
+                {run.ai_warnings?.length > 0 && (
+                  <div style={{ marginTop: 12 }}>
+                    <h3>Warnings</h3>
+                    {run.ai_warnings.map((warning, index) => (
+                      <p key={index} className="warning">
+                        {warning}
+                      </p>
+                    ))}
+                  </div>
                 )}
 
                 <button
