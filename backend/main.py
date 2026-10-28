@@ -51,6 +51,8 @@ app.add_middleware(
         "http://127.0.0.1:5173",
         "http://localhost:5174",
         "http://127.0.0.1:5174",
+        "https://procureai-gray-eight.vercel.app",
+        "https://procureai-dur7lfd3b-cognitive-x.vercel.app",
     ],
     allow_credentials=True,
     allow_methods=["*"],
@@ -653,21 +655,4 @@ async def upload_quotations(
         "files": parsed_files,
     }
     
-# Allow local development and deployed Vercel frontends.
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=[
-        "http://localhost:5173",
-        "http://127.0.0.1:5173",
-        "http://localhost:5174",
-        "http://127.0.0.1:5174",
-        "https://procureai-gray-eight.vercel.app",
-        "https://procureai-dur7lfd3b-cognitive-x.vercel.app",
-        "https://procureai-git-main-cognitive-x.vercel.app",
-        "https://procureai-llx0ajwpl-cognitive-x.vercel.app",
-    ],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
 
