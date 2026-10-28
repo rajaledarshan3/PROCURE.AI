@@ -45,6 +45,7 @@ app = FastAPI(
 
 # CORS: allow the Vite frontend on ports 5173 and 5174.
 
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
@@ -52,6 +53,7 @@ app.add_middleware(
         "http://127.0.0.1:5173",
         "http://localhost:5174",
         "http://127.0.0.1:5174",
+        "https://procureai-dur7lfd3b-cognitive-x.vercel.app",
     ],
     allow_origin_regex=r"https://.*\.vercel\.app",
     allow_credentials=True,
